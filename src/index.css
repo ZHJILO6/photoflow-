@@ -1,0 +1,102 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+
+  html {
+    color-scheme: dark;
+  }
+
+  body {
+    margin: 0;
+    background-color: #121214;
+    color: #e6e6ea;
+    overflow: hidden;
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: #2c2c33 transparent;
+  }
+
+  ::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
+
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  ::-webkit-scrollbar-thumb {
+    background: #2c2c33;
+    border-radius: 999px;
+  }
+
+  ::-webkit-scrollbar-thumb:hover {
+    background: #3a3a42;
+  }
+
+  ::selection {
+    background: rgba(130, 87, 229, 0.35);
+  }
+
+  input,
+  textarea {
+    outline: none;
+  }
+
+  textarea {
+    resize: none;
+  }
+}
+
+@layer components {
+  .panel {
+    @apply rounded-xl border border-white/5 bg-ink-800 shadow-panel;
+  }
+
+  .panel-header {
+    @apply flex items-center justify-between border-b border-white/5 px-4 py-3;
+  }
+
+  .chip {
+    @apply inline-flex items-center gap-1.5 rounded-md border border-white/5 bg-ink-700 px-2 py-1 font-mono text-[11px] text-zinc-400;
+  }
+
+  .btn {
+    @apply inline-flex items-center justify-center gap-2 rounded-lg px-3.5 py-2 text-sm font-medium transition-colors duration-150 disabled:cursor-not-allowed disabled:opacity-40;
+  }
+
+  .btn-primary {
+    @apply btn bg-accent text-white hover:bg-[#9068e8] active:bg-[#7450cf];
+  }
+
+  .btn-ghost {
+    @apply btn border border-white/10 bg-ink-700 text-zinc-300 hover:border-white/20 hover:bg-ink-600 hover:text-white;
+  }
+
+  .btn-muted {
+    @apply btn bg-transparent text-zinc-500 hover:text-zinc-300;
+  }
+
+  .field {
+    @apply w-full rounded-lg border border-white/10 bg-ink-950 px-3 py-2 font-mono text-[13px] text-zinc-200 placeholder:text-zinc-600 focus:border-accent/60 focus:ring-2 focus:ring-accent/20;
+  }
+
+  .label {
+    @apply mb-1.5 block text-[11px] font-medium uppercase tracking-[0.14em] text-zinc-500;
+  }
+
+  .dot {
+    @apply h-2 w-2 rounded-full;
+  }
+}
