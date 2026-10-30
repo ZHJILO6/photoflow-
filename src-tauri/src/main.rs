@@ -20,6 +20,7 @@ fn main() {
             commands::copy_matched,
             commands::scan_card,
             commands::import_card,
+            commands::import_card_preview,
             commands::write_match_csv,
             commands::thumbnail_data_url,
             commands::focus_preview_data_url,

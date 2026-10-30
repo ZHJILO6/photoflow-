@@ -65,7 +65,9 @@ export default function IngesterView({
   const [cardDir, setCardDir] = useState("");
   const [cardReport, setCardReport] = useState<ScanReport | null>(null);
   const [importReport, setImportReport] = useState<ArchiveReport | null>(null);
-  const [busy, setBusy] = useState<"scan" | "import" | null>(null);
+  const [plan, setPlan] = useState<ArchiveReport | null>(null);
+  const [planFor, setPlanFor] = useState("");
+  const [busy, setBusy] = useState<"scan" | "import" | "preview" | null>(null);
   const [status, setStatus] = useState<StatusMessage | null>(null);
   const [detected, setDetected] = useState<string | null>(null);
   const [archiveStats, setArchiveStats] = useState<ArchiveStats | null>(null);
@@ -190,7 +192,7 @@ export default function IngesterView({
     await runScan(cardDir.trim());
   };
 
-  const handleImport = async () => {
+  const handlePreview = async () => {
     if (!cardDir.trim()) {
       setStatus({ tone: "err", text: "请先选择存储卡根目录" });
       return;
@@ -199,7 +201,45 @@ export default function IngesterView({
       setStatus({ tone: "err", text: "请先选择归档根目录" });
       return;
     }
-    await runImport(cardDir.trim(), archiveDir.trim());
+    const root = cardDir.trim();
+    const dest = archiveDir.trim();
+    setBusy("preview");
+    try {
+      const result = await invoke<ArchiveReport>("import_card_preview", {
+        cardDir: root,
+        destDir: dest,
+      });
+      setPlan(result);
+      setPlanFor(`${root}|${dest}`);
+      const failNote = result.failed.length > 0 ? ` · 读取失败 ${result.failed.length}` : "";
+      setStatus({
+        tone: result.failed.length > 0 ? "err" : "info",
+        text: `预演：将新增 ${result.copied} · 库内已存在 ${result.skipped_existing} · 批内重复 ${result.skipped_duplicates}${failNote} · 尚未写入任何文件`,
+      });
+    } catch (error) {
+      setPlan(null);
+      setStatus({ tone: "err", text: String(error) });
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const handleConfirmImport = async () => {
+    const root = cardDir.trim();
+    const dest = archiveDir.trim();
+    if (!plan) {
+      setStatus({ tone: "err", text: "请先预演导入" });
+      return;
+    }
+    if (`${root}|${dest}` !== planFor) {
+      setPlan(null);
+      setPlanFor("");
+      setStatus({ tone: "err", text: "卡目录或归档目录已变更，请重新预演" });
+      return;
+    }
+    await runImport(root, dest);
+    setPlan(null);
+    setPlanFor("");
   };
 
   const handleScanArchive = async () => {
@@ -517,16 +557,65 @@ export default function IngesterView({
             <button
               type="button"
               className="btn-primary w-full justify-center"
-              onClick={() => void handleImport()}
+              onClick={() => void handlePreview()}
               disabled={busy !== null}
+              title="先扫描判重、给出将导入多少张，确认后才真正写入磁盘"
             >
-              {busy === "import" ? (
+              {busy === "preview" ? (
                 <Loader2 size={14} className="animate-spin" />
               ) : (
                 <HardDriveDownload size={14} />
               )}
-              {busy === "import" ? "导入中" : "一键导入整卡"}
+              {busy === "preview" ? "预演中" : "预演导入（先看结果）"}
             </button>
+
+            {plan && (
+              <div className="space-y-2 rounded-lg border border-accent/30 bg-accent/5 p-3">
+                <p className="font-mono text-[10px] uppercase tracking-[0.14em] text-zinc-500">
+                  Import Plan · 尚未写入
+                </p>
+                <div className="grid grid-cols-3 gap-2 font-mono text-[11px]">
+                  <span className="text-accent">将新增 {plan.copied}</span>
+                  <span className="text-zinc-400">已存在 {plan.skipped_existing}</span>
+                  <span className="text-zinc-400">重复 {plan.skipped_duplicates}</span>
+                </div>
+                {plan.failed.length > 0 && (
+                  <p className="line-clamp-2 font-mono text-[10px] text-danger">
+                    读取失败 {plan.failed.length}：{plan.failed[0]}
+                  </p>
+                )}
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    className="btn-primary flex-1 justify-center"
+                    onClick={() => void handleConfirmImport()}
+                    disabled={busy !== null || plan.copied === 0}
+                  >
+                    {busy === "import" ? (
+                      <Loader2 size={14} className="animate-spin" />
+                    ) : (
+                      <HardDriveDownload size={14} />
+                    )}
+                    {busy === "import"
+                      ? "导入中"
+                      : plan.copied === 0
+                      ? "没有需要导入的新文件"
+                      : `确认导入 ${plan.copied} 张`}
+                  </button>
+                  <button
+                    type="button"
+                    className="btn-muted"
+                    onClick={() => {
+                      setPlan(null);
+                      setPlanFor("");
+                    }}
+                    disabled={busy !== null}
+                  >
+                    取消
+                  </button>
+                </div>
+              </div>
+            )}
 
             {importReport && (
               <div className="rounded-lg border border-white/5 bg-ink-900/60 p-3">
@@ -907,7 +996,7 @@ export default function IngesterView({
                 type="button"
                 className="btn-primary"
                 onClick={() => {
-                  void handleImport();
+                  void handlePreview();
                   setDetected(null);
                 }}
                 disabled={!archiveDir.trim()}

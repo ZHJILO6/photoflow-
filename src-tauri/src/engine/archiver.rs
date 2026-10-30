@@ -260,6 +260,50 @@ where
     Ok(report)
 }
 
+/// 导入前预演：只计算不落盘，返回「将新增 / 已存在跳过 / 批内重复 / 失败」的数量。
+///
+/// 与 [`archive_entries`] 使用完全相同的判重规则，因此预演结果就是真实导入结果的预演。
+pub fn plan_entries<I>(entries: I, dest_root: &Path) -> Result<ArchiveReport, EngineError>
+where
+    I: IntoIterator<Item = FileEntry>,
+{
+    let started = Instant::now();
+    let mut report = ArchiveReport::default();
+    let mut seen_hashes: HashSet<u64> = HashSet::new();
+    let size_index = index_archive_sizes(dest_root);
+    let mut hash_cache: HashMap<PathBuf, u64> = HashMap::new();
+
+    for entry in entries {
+        let source = Path::new(&entry.path);
+
+        let source_hash = match hash_file_xxh64(source) {
+            Ok(hash) => hash,
+            Err(error) => {
+                report.failed.push(format!("{}: {}", entry.file_name, error));
+                continue;
+            }
+        };
+
+        if !seen_hashes.insert(source_hash) {
+            report.skipped_duplicates += 1;
+            continue;
+        }
+
+        if archive_contains(&size_index, &mut hash_cache, entry.size, source_hash) {
+            report.skipped_existing += 1;
+            continue;
+        }
+
+        report.copied += 1;
+        report
+            .destinations
+            .push(destination_for(dest_root, &entry).to_string_lossy().to_string());
+    }
+
+    report.duration_ms = started.elapsed().as_millis() as u64;
+    Ok(report)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -275,6 +319,42 @@ mod tests {
         let hash = hash_file_xxh64(&temp).unwrap();
         let _ = fs::remove_file(&temp);
         assert_ne!(hash, 0);
+    }
+
+    #[test]
+    fn plan_counts_without_touching_disk() {
+        let base = std::env::temp_dir().join("photoflow_plan_test");
+        let _ = fs::remove_dir_all(&base);
+        let source = base.join("card").join("_DSC0001.JPG");
+        fs::create_dir_all(source.parent().unwrap()).unwrap();
+        let payload = vec![3u8; 100 * 1024];
+        fs::write(&source, &payload).unwrap();
+
+        let dest_root = base.join("archive");
+        let entry = FileEntry {
+            path: source.to_string_lossy().to_string(),
+            file_name: "_DSC0001.JPG".to_string(),
+            stem: "_dsc0001".to_string(),
+            ext: "jpg".to_string(),
+            kind: MediaKind::Jpeg,
+            size: payload.len() as u64,
+            capture_date: "20261030".to_string(),
+            capture_epoch: 0,
+            core_num: Some(1),
+        };
+
+        let plan = plan_entries(vec![entry.clone()], &dest_root).unwrap();
+        assert_eq!(plan.copied, 1);
+        assert_eq!(plan.skipped_existing, 0);
+        // 预演不能真的把文件或目录写出来。
+        assert!(!dest_root.exists());
+
+        // 预演之后再真实归档，结果应与预演一致。
+        let real = archive_entries(vec![entry], &dest_root).unwrap();
+        assert_eq!(real.copied, 1);
+        assert!(dest_root.join("20261030").join("JPG").join("_DSC0001.JPG").exists());
+
+        let _ = fs::remove_dir_all(&base);
     }
 
     #[test]

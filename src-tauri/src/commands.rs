@@ -265,6 +265,33 @@ pub async fn scan_card(card_dir: String) -> Result<ScanReport, String> {
     })
 }
 
+/// 导入预演：只扫描与判重，不写任何文件，用于导入前确认目标目录是否正确。
+#[tauri::command]
+pub async fn import_card_preview(
+    card_dir: String,
+    dest_dir: String,
+) -> Result<ArchiveReport, String> {
+    let root = PathBuf::from(card_dir.trim());
+    if root.as_os_str().is_empty() {
+        return Err("请先选择存储卡根目录".to_string());
+    }
+    let dest = PathBuf::from(dest_dir.trim());
+    if dest.as_os_str().is_empty() {
+        return Err("请先选择归档根目录".to_string());
+    }
+    if root == dest {
+        return Err("归档目录不能与存储卡目录相同，否则会重复拷贝自身文件".to_string());
+    }
+
+    tauri::async_runtime::spawn_blocking(move || {
+        let index = indexer::scan(&root)?;
+        archiver::plan_entries(index.files, &dest)
+    })
+    .await
+    .map_err(|error| error.to_string())?
+    .map_err(|error| error.to_string())
+}
+
 #[tauri::command]
 pub async fn import_card(card_dir: String, dest_dir: String) -> Result<ArchiveReport, String> {
     let root = PathBuf::from(card_dir.trim());

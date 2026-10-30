@@ -64,16 +64,65 @@ function clockLabel(epoch: number): string {
 
 const thumbCache = new Map<string, string>();
 
-/// 跨页面切换保留挑片进度（切到全局设置再回来不会丢数据）。
-const cullSession = {
-  dir: "",
-  items: [] as CullItem[],
-  marks: {} as Record<string, Mark>,
-  rotations: {} as Record<string, number>,
-  cursor: 0,
-  gap: 2,
-  filter: "all" as Filter,
-  dateFilter: "all",
+/** 挑片进度落盘键：关掉软件再打开，标记和旋转不会丢。 */
+const CULL_STORAGE_KEY = "photoflow.cull.session.v1";
+const THUMB_CACHE_LIMIT = 1200;
+const PREVIEW_CACHE_LIMIT = 40;
+const FULL_CACHE_LIMIT = 4;
+
+/** 简易 LRU：超过上限淘汰最早写入的一条，避免 base64 大图把内存吃满。 */
+function remember(cache: Map<string, string>, key: string, value: string, limit: number) {
+  if (cache.has(key)) cache.delete(key);
+  cache.set(key, value);
+  while (cache.size > limit) {
+    const oldest = cache.keys().next().value;
+    if (oldest === undefined) break;
+    cache.delete(oldest);
+  }
+}
+
+interface CullProgress {
+  dir: string;
+  marks: Record<string, Mark>;
+  rotations: Record<string, number>;
+  cursor: number;
+  gap: number;
+  filter: Filter;
+  dateFilter: string;
+}
+
+/** 读取上次落盘的进度。照片列表体积太大不落盘，重开时按目录重新扫描。 */
+function loadCullProgress(): CullProgress | null {
+  try {
+    const raw = window.localStorage.getItem(CULL_STORAGE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as Partial<CullProgress>;
+    return {
+      dir: typeof parsed.dir === "string" ? parsed.dir : "",
+      marks: parsed.marks ?? {},
+      rotations: parsed.rotations ?? {},
+      cursor: Number(parsed.cursor) || 0,
+      gap: Number(parsed.gap) || 2,
+      filter: (parsed.filter as Filter) ?? "all",
+      dateFilter: typeof parsed.dateFilter === "string" ? parsed.dateFilter : "all",
+    };
+  } catch {
+    return null;
+  }
+}
+
+const restoredProgress = loadCullProgress();
+
+/// 跨页面切换保留挑片进度；同时把标记落盘，重开软件可续挑。
+const cullSession: CullProgress & { items: CullItem[] } = {
+  dir: restoredProgress?.dir ?? "",
+  items: [],
+  marks: restoredProgress?.marks ?? {},
+  rotations: restoredProgress?.rotations ?? {},
+  cursor: restoredProgress?.cursor ?? 0,
+  gap: restoredProgress?.gap ?? 2,
+  filter: restoredProgress?.filter ?? "all",
+  dateFilter: restoredProgress?.dateFilter ?? "all",
 };
 
 /// 拍摄日期键：优先 EXIF 日期，缺失时归入「未知日期」。
@@ -122,7 +171,7 @@ function GroupThumb({
       rotation,
     })
       .then((data) => {
-        thumbCache.set(key, data);
+        remember(thumbCache, key, data, THUMB_CACHE_LIMIT);
         if (alive) setSrc(data);
       })
       .catch(() => {
@@ -198,6 +247,14 @@ export default function CullView({ settings }: CullViewProps) {
       filter,
       dateFilter,
     });
+    try {
+      window.localStorage.setItem(
+        CULL_STORAGE_KEY,
+        JSON.stringify({ dir, marks, rotations, cursor, gap, filter, dateFilter })
+      );
+    } catch {
+      /* localStorage 满了或被禁用时忽略，不影响内存里的进度 */
+    }
   }, [dir, items, marks, rotations, cursor, gap, filter, dateFilter]);
   const cancelRef = useRef(false);
   const previewCache = useRef<Map<string, string>>(new Map());
@@ -295,7 +352,7 @@ export default function CullView({ settings }: CullViewProps) {
           maxEdge: 1400,
           rotation: currentRotation,
         });
-        previewCache.current.set(previewKey, data);
+        remember(previewCache.current, previewKey, data, PREVIEW_CACHE_LIMIT);
         if (active) setPreview(data);
       } catch (error) {
         if (active) setStatus({ tone: "err", text: String(error) });
@@ -323,7 +380,7 @@ export default function CullView({ settings }: CullViewProps) {
         path: current.path,
         rotation: currentRotation,
       });
-      fullCache.current.set(previewKey, data);
+      remember(fullCache.current, previewKey, data, FULL_CACHE_LIMIT);
       setFullPreview(data);
       setStatus(null);
     } catch (error) {
@@ -483,6 +540,8 @@ export default function CullView({ settings }: CullViewProps) {
       return;
     }
     if (targetDir) setDir(target);
+    // 目录与上次落盘的相同，说明是续挑：保留已有标记与旋转，而不是从零开始。
+    const canResume = cullSession.dir.trim().toLowerCase() === target.toLowerCase();
     setLoading(true);
     setStatus(null);
     try {
@@ -492,13 +551,28 @@ export default function CullView({ settings }: CullViewProps) {
       for (const item of report.items) {
         if ((item.rating ?? 0) > 0) preloaded[item.path] = "keep";
       }
-      setMarks(preloaded);
-      setCursor(0);
-      setDateFilter("all");
-      setRotations({});
+      const pathSet = new Set(report.items.map((item) => item.path));
+      const restoredMarks: Record<string, Mark> = {};
+      const restoredRotations: Record<string, number> = {};
+      if (canResume) {
+        for (const [path, mark] of Object.entries(cullSession.marks)) {
+          if (pathSet.has(path)) restoredMarks[path] = mark;
+        }
+        for (const [path, rotation] of Object.entries(cullSession.rotations)) {
+          if (pathSet.has(path)) restoredRotations[path] = rotation;
+        }
+      }
+      // 用户自己的标记优先于相机内星标预置。
+      setMarks({ ...preloaded, ...restoredMarks });
+      setRotations(restoredRotations);
+      setCursor(
+        canResume ? Math.min(cullSession.cursor, Math.max(report.items.length - 1, 0)) : 0
+      );
+      if (!canResume) setDateFilter("all");
       previewCache.current.clear();
       fullCache.current.clear();
       const withRating = Object.keys(preloaded).length;
+      const restoredCount = Object.keys(restoredMarks).length;
       const dayCount = new Set(report.items.map((item) => dateKey(item))).size;
       const skippedNote =
         report.skipped > 0 ? ` · 跳过 ${report.skipped} 个非 JPG 文件` : "";
@@ -512,7 +586,7 @@ export default function CullView({ settings }: CullViewProps) {
           tone: "ok",
           text: `已载入 ${report.items.length} 张照片（含子目录共 ${report.total_files} 个文件${skippedNote}）· ${dayCount} 个拍摄日期${
             withRating > 0 ? ` · 相机星标 ${withRating} 张已预置为保留` : ""
-          }`,
+          }${restoredCount > 0 ? ` · 已恢复上次标记 ${restoredCount} 张` : ""}`,
         });
       }
     } catch (error) {
@@ -527,6 +601,18 @@ export default function CullView({ settings }: CullViewProps) {
     () => dayItems.filter((item) => marks[item.path] === "keep"),
     [dayItems, marks]
   );
+
+  /// 重开软件时自动扫描上次的目录，配合落盘的标记实现断点续挑。
+  const autoResumedRef = useRef(false);
+  useEffect(() => {
+    if (autoResumedRef.current) return;
+    autoResumedRef.current = true;
+    if (cullSession.items.length === 0 && cullSession.dir.trim()) {
+      void handleScan(cullSession.dir);
+    }
+    // 只在首次挂载时执行一次
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const handleExportKept = async () => {
     if (keptItems.length === 0) {
